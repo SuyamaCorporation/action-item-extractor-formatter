@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>会議後アクションアイテム自動抽出フォーマッター</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center py-6 px-4">
+<h1 class="text-2xl font-bold mb-2 text-sky-400">会議後アクションアイテム自動抽出フォーマッター</h1>
+<p class="text-sm text-gray-400 mb-5">会議メモを貼り付けると「誰が・何を・いつまでに」を自動検出します</p>
+
+<div class="w-full max-w-4xl grid grid-cols-2 gap-4">
+  <div>
+    <label class="block text-sm font-semibold text-gray-300 mb-2">会議メモ入力</label>
+    <textarea id="memoInput" class="w-full h-72 bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-sm font-mono resize-none focus:outline-none focus:border-sky-500" placeholder="例:
+山田さんが来週までに資料を作成する。
+田中が3/15までに実装を完了させる。
+鈴木さんは今日中にメールを送る。
+佐藤が明日、顧客にレポートを提出する。" aria-label="会議メモ入力欄"></textarea>
+    <div class="mt-2 flex gap-2">
+      <button id="extractBtn" class="px-5 py-2 bg-sky-600 hover:bg-sky-500 rounded font-semibold text-sm">抽出実行</button>
+      <button id="clearBtn" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">クリア</button>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-sm font-semibold text-gray-300 mb-2">抽出結果</label>
+    <div id="resultTable" class="bg-gray-800 border border-gray-600 rounded-lg p-3 h-72 overflow-y-auto text-sm">
+      <p class="text-gray-500 text-xs">抽出実行ボタンを押すと表示されます</p>
+    </div>
+    <div class="mt-2 flex gap-2">
+      <button id="copyMd" class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 rounded text-sm">Markdownコピー</button>
+      <button id="downloadCsv" class="px-4 py-2 bg-green-700 hover:bg-green-600 rounded text-sm">CSVダウンロード</button>
+    </div>
+  </div>
+</div>
+
+<div id="itemEditor" class="w-full max-w-4xl mt-4 hidden">
+  <h3 class="text-sm font-semibold text-gray-300 mb-2">担当者別ビュー</h3>
+  <div id="byAssignee" class="grid grid-cols-2 gap-3"></div>
+</div>
+<script>
+let items = [];
+
+const DEADLINES = [
+  { pattern: /今日中|本日中|本日/, label: '今日' },
+  { pattern: /明日|翌日/, label: '明日' },
+  { pattern: /今週中|今週/, label: '今週中' },
+  { pattern: /来週中|来週/, label: '来週中' },
+  { pattern: /今月中|今月/, label: '今月中' },
+  { pattern: /(\d+)月(\d+)日/, label: null },
+  { pattern: /(\d+)\/(\d+)/, label: null },
+  { pattern: /(\d+)日以内/, label: null },
+];
+
+function detectDeadline(text) {
+  for (const d of DEADLINES) {
+    const m = text.match(d.pattern);
+    if (m) {
+      if (d.label) return d.label;
+      return m[0];
+    }
+  }
+  return '期限未定';
+}
+
+function detectAssignee(text) {
+  const patterns = [
+    /([^\s、。]+?)(?:さん|くん|氏)(?:が|は|に|も)/,
+    /([^\s、。]{2,5})(?:が|は)(?:.*?)(?:する|する。|します|します。)/,
+    /^([^\s、。]{1,5})(?:：|:)/m,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1].replace(/[さんくん氏]$/, '').trim();
+  }
+  return '未定';
+}
+
+function detectTask(text) {
+  const removed = text
+    .replace(/[^\s、。]+(?:さん|くん|氏)?(?:が|は|に|も)/g, '')
+    .replace(/今日中|明日|来週|今週|今月|本日|翌日|\d+月\d+日|\d+\/\d+|\d+日以内|まで(?:に)?/g, '')
+    .replace(/[。、\n]/g, '')
+    .trim();
+  return removed || text.substring(0, 30);
+}
+
+function detectPriority(text) {
+  if (/緊急|急いで|即|ASAP|すぐ|今日中|本日/i.test(text)) return '高';
+  if (/重要|必須|必ず|絶対/i.test(text)) return '中';
+  return '低';
+}
+
+function extract() {
+  const memo = document.getElementById('memoInput').value;
+  const lines = memo.split('\n').filter(l => l.trim().length > 0);
+  items = [];
+  for (const line of lines) {
+    const l = line.trim();
+    if (!l) continue;
+    const task = detectTask(l);
+    if (task.length < 2) continue;
+    items.push({
+      assignee: detectAssignee(l),
+      task: task.length > 50 ? task.substring(0, 50) + '…' : task,
+      deadline: detectDeadline(l),
+      priority: detectPriority(l),
+      original: l
+    });
+  }
+  renderTable();
+  renderByAssignee();
+}
+
+function renderTable() {
+  const area = document.getElementById('resultTable');
+  if (items.length === 0) {
+    area.innerHTML = '<p class="text-gray-500 text-xs">アクションアイテムが検出されませんでした</p>';
+    return;
+  }
+  const priorityColor = { '高': 'text-red-400', '中': 'text-yellow-400', '低': 'text-gray-400' };
+  area.innerHTML = `
+    <table class="w-full text-xs">
+      <thead>
+        <tr class="text-gray-500 border-b border-gray-700">
+          <th class="text-left py-1 pr-2">担当</th>
+          <th class="text-left py-1 pr-2">タスク</th>
+          <th class="text-left py-1 pr-2">期限</th>
+          <th class="text-left py-1">優先度</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(it => `
+          <tr class="border-b border-gray-700 hover:bg-gray-700">
+            <td class="py-1 pr-2 text-sky-300 font-semibold whitespace-nowrap">${it.assignee}</td>
+            <td class="py-1 pr-2">${it.task}</td>
+            <td class="py-1 pr-2 text-gray-300 whitespace-nowrap">${it.deadline}</td>
+            <td class="py-1 ${priorityColor[it.priority]}">${it.priority}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderByAssignee() {
+  const area = document.getElementById('byAssignee');
+  document.getElementById('itemEditor').classList.remove('hidden');
+  const grouped = {};
+  items.forEach(it => { (grouped[it.assignee] = grouped[it.assignee] || []).push(it); });
+  area.innerHTML = Object.entries(grouped).map(([name, its]) => `
+    <div class="bg-gray-800 rounded-lg p-3">
+      <div class="font-semibold text-sky-400 mb-2">${name} (${its.length}件)</div>
+      ${its.map(it => `<div class="text-xs text-gray-300 mb-1 flex gap-2"><span class="text-gray-500">${it.deadline}</span><span>${it.task}</span></div>`).join('')}
+    </div>
+  `).join('');
+}
+
+document.getElementById('extractBtn').addEventListener('click', extract);
+document.getElementById('clearBtn').addEventListener('click', () => {
+  document.getElementById('memoInput').value = '';
+  items = [];
+  document.getElementById('resultTable').innerHTML = '<p class="text-gray-500 text-xs">抽出実行ボタンを押すと表示されます</p>';
+  document.getElementById('itemEditor').classList.add('hidden');
+});
+
+document.getElementById('copyMd').addEventListener('click', () => {
+  const md = `| 担当 | タスク | 期限 | 優先度 |\n|---|---|---|---|\n` +
+    items.map(it => `| ${it.assignee} | ${it.task} | ${it.deadline} | ${it.priority} |`).join('\n');
+  navigator.clipboard.writeText(md).then(() => alert('Markdownをコピーしました'));
+});
+
+document.getElementById('downloadCsv').addEventListener('click', () => {
+  const csv = '担当,タスク,期限,優先度\n' +
+    items.map(it => `"${it.assignee}","${it.task}","${it.deadline}","${it.priority}"`).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'action_items.csv';
+  a.click();
+});
+</script>
+</body>
+</html>
